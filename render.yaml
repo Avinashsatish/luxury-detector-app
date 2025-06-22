@@ -2,7 +2,7 @@ services:
   - type: web
     name: luxury-detector-app
     env: python
-    buildCommand: ""
+    buildCommand: pip install -r luxury-detection-app/requirements.txt
     startCommand: python luxury-detection-app/app.py
     envVars:
       - key: FLASK_ENV
