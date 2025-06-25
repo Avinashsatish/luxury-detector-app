@@ -315,6 +315,6 @@ def records():
     return render_template('records.html', records=all_records, search=search_query, blurry_filter=filter_blurry)
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))  # Use the port provided by the platform
+    port = int(os.environ.get('PORT', 8000))  # Use the port provided by the platform
     app.run(host='0.0.0.0', port=port, debug=False)  # Bind to all interfaces
 
