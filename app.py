@@ -128,8 +128,8 @@ def generate_feedback(prediction, caption, blurry):
             feedback_parts.append("Watch images should focus on craftsmanship and luxury branding.")
         elif "jewelry" in caption_lower:
             feedback_parts.append("Jewelry images should highlight intricate details and luxury materials.")
-        elif "clothing" in caption_lower:
-            feedback_parts.append("Clothing images should focus on fabric quality and stylish presentation.")
+        elif "cloth" in caption_lower:
+            feedback_parts.append("Cloth images should focus on fabric quality and stylish presentation.")
         elif "shoes" in caption_lower:
             feedback_parts.append("Shoe images should emphasize design and premium materials.")
         elif "accessories" in caption_lower:
@@ -160,6 +160,12 @@ def generate_feedback(prediction, caption, blurry):
             feedback_parts.append("Car images should emphasize sleek design and high-performance features.")
         elif "bike" in caption_lower:
             feedback_parts.append("Bike images should focus on stylish design and premium materials.")
+        elif "suit" in caption_lower:
+            feedback_parts.append("Suit images should highlight tailoring quality and luxury fabrics.")
+        elif "dress" in caption_lower:
+            feedback_parts.append("Dress images should focus on elegant design and high-quality materials.")
+        elif "bag" in caption_lower:
+            feedback_parts.append("Bag images should emphasize craftsmanship and luxury branding.")
         else:
             feedback_parts.append(f"Caption insight: '{caption}'.")
 
@@ -309,4 +315,6 @@ def records():
     return render_template('records.html', records=all_records, search=search_query, blurry_filter=filter_blurry)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 5000))  # Use the port provided by the platform
+    app.run(host='0.0.0.0', port=port, debug=False)  # Bind to all interfaces
+
