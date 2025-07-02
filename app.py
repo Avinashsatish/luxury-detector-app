@@ -1,5 +1,8 @@
 from flask import Flask, request, render_template, jsonify
+from werkzeug.utils import secure_filename
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import or_, func
+from bs4 import BeautifulSoup
 from PIL import Image
 import cv2
 import numpy as np
@@ -174,123 +177,220 @@ def generate_feedback(prediction, caption, blurry):
 @app.route('/analyze', methods=['POST'])
 def analyze():
     try:
-        if 'image' not in request.files:
-            return jsonify({'error': 'No file uploaded'}), 400
-        
-        image_file = request.files['image']
-        if image_file.filename == '':
-            return jsonify({'error': 'No selected file'}), 400
+        if 'images' not in request.files:
+            return render_template('index.html', error='No file uploaded.')
 
+        upload_mode = request.form.get('uploadMode', 'single')
+        image_files = request.files.getlist('images') if upload_mode == 'folder' else [request.files['images']]
+
+        results = []
         os.makedirs('uploads', exist_ok=True)
-        save_path = os.path.join('uploads', image_file.filename)
-        image_file.save(save_path)
 
-        # Get basic image info
-        img = Image.open(save_path)
-        width, height = img.size
-        format_type = img.format
-        blurry = is_blurry(save_path)
+        for image_file in image_files:
+            if image_file.filename == '':
+                continue
 
-        # === Call Azure Computer Vision for description ===
-        description = ""
-        vision_url = f"{VISION_API_ENDPOINT}/vision/v3.2/analyze?visualFeatures=Description"
-        vision_headers = {
-            "Ocp-Apim-Subscription-Key": VISION_API_KEY,
-            "Content-Type": "application/octet-stream"
-        }
-        
-        try:
-            with open(save_path, 'rb') as img_data:
-                vision_response = requests.post(vision_url, headers=vision_headers, data=img_data)
-            
-            if vision_response.status_code == 200:
-                captions = vision_response.json().get("description", {}).get("captions", [])
-                if captions:
-                    description = captions[0]["text"]
-            else:
-                app.logger.error(f"Vision API Error: {vision_response.status_code} - {vision_response.text}")
-        except Exception as e:
-            app.logger.error(f"Vision API Exception: {str(e)}")
+            filename = secure_filename(image_file.filename)
+            save_path = os.path.join('uploads', filename)
+            image_file.save(save_path)
 
-        # === Call Custom Vision API for prediction ===
-        prediction_tag = "Unknown"
-        prediction_confidence = 0.0
-        
-        # Fixed Custom Vision URL and headers
-        prediction_url = f"{CUSTOM_VISION_ENDPOINT}/customvision/v3.0/Prediction/{CUSTOM_VISION_PROJECT_ID}/classify/iterations/{CUSTOM_VISION_PUBLISHED_NAME}/image"
-        cv_headers = {
-            "Prediction-Key": CUSTOM_VISION_PREDICTION_KEY,
-            "Content-Type": "application/octet-stream"
-        }
+            # Get image info
+            img = Image.open(save_path)
+            width, height = img.size
+            format_type = img.format
+            blurry = is_blurry(save_path)
 
-        try:
-            with open(save_path, 'rb') as image_data:
-                pred_response = requests.post(prediction_url, headers=cv_headers, data=image_data)
-             
-            app.logger.debug(f"Custom Vision Response Status: {pred_response.status_code}")
-            app.logger.debug(f"Custom Vision Response: {pred_response.text}")
+            # Azure Vision API
+            description = ""
+            vision_url = f"{VISION_API_ENDPOINT}/vision/v3.2/analyze?visualFeatures=Description"
+            vision_headers = {
+                "Ocp-Apim-Subscription-Key": VISION_API_KEY,
+                "Content-Type": "application/octet-stream"
+            }
 
-            if pred_response.status_code == 200:
-                response_data = pred_response.json()
-                predictions = response_data.get("predictions", [])
-                
-                if predictions:
-                    best = max(predictions, key=lambda x: x["probability"])
-                    prediction_tag = best["tagName"]
-                    prediction_confidence = best["probability"]
-                else:
-                    prediction_tag = "No predictions available"
-                    prediction_confidence = 0.0
-            else:
-                prediction_tag = f"API Error: {pred_response.status_code}"
-                prediction_confidence = 0.0
-                app.logger.error(f"Custom Vision API Error: {pred_response.status_code} - {pred_response.text}")
-                
-        except Exception as e:
-            prediction_tag = f"Exception: {str(e)}"
+            try:
+                with open(save_path, 'rb') as img_data:
+                    vision_response = requests.post(vision_url, headers=vision_headers, data=img_data)
+                if vision_response.status_code == 200:
+                    captions = vision_response.json().get("description", {}).get("captions", [])
+                    if captions:
+                        description = captions[0]["text"]
+            except Exception as e:
+                app.logger.error(f"Vision API Exception: {str(e)}")
+
+            # Custom Vision API
+            prediction_tag = "Unknown"
             prediction_confidence = 0.0
-            app.logger.error(f"Custom Vision Exception: {str(e)}")
+            prediction_url = f"{CUSTOM_VISION_ENDPOINT}/customvision/v3.0/Prediction/{CUSTOM_VISION_PROJECT_ID}/classify/iterations/{CUSTOM_VISION_PUBLISHED_NAME}/image"
+            cv_headers = {
+                "Prediction-Key": CUSTOM_VISION_PREDICTION_KEY,
+                "Content-Type": "application/octet-stream"
+            }
 
-        result = {
-            'format': format_type,
-            'width': width,
-            'height': height,
-            'blurry': 'Yes' if blurry else 'No',
-            'caption': description,
-            'prediction': prediction_tag,
-            'prediction_confidence': round(prediction_confidence * 100, 2)
-        }
-        feedback_text = generate_feedback(prediction_tag, description, 'Yes' if blurry else 'No')
-        result['feedback'] = feedback_text
+            try:
+                with open(save_path, 'rb') as image_data:
+                    pred_response = requests.post(prediction_url, headers=cv_headers, data=image_data)
+                if pred_response.status_code == 200:
+                    predictions = pred_response.json().get("predictions", [])
+                    if predictions:
+                        best = max(predictions, key=lambda x: x["probability"])
+                        prediction_tag = best["tagName"]
+                        prediction_confidence = best["probability"]
+            except Exception as e:
+                app.logger.error(f"Custom Vision Exception: {str(e)}")
 
-        new_entry = ImageAnalysis(
-        filename=image_file.filename,
-        format=result['format'],
-        width=result['width'],
-        height=result['height'],
-        blurry=result['blurry'],
-        prediction=result['prediction'],
-        confidence=result['prediction_confidence'],
-        caption=result.get('caption', ''),
-        feedback=result.get('feedback', '')
-        )
-        db.session.add(new_entry)
+            # Prepare result
+            result = {
+                'filename': filename,
+                'format': format_type,
+                'width': width,
+                'height': height,
+                'blurry': 'Yes' if blurry else 'No',
+                'caption': description,
+                'prediction': prediction_tag,
+                'prediction_confidence': round(prediction_confidence * 100, 2),
+                'feedback': generate_feedback(prediction_tag, description, 'Yes' if blurry else 'No')
+            }
+
+            # Save to DB
+            new_entry = ImageAnalysis(
+                filename=filename,
+                format=result['format'],
+                width=result['width'],
+                height=result['height'],
+                blurry=result['blurry'],
+                prediction=result['prediction'],
+                confidence=result['prediction_confidence'],
+                caption=result['caption'],
+                feedback=result['feedback']
+            )
+            db.session.add(new_entry)
+            results.append(result)
+
+            # Clean up
+            try:
+                os.remove(save_path)
+            except:
+                pass
+
         db.session.commit()
 
-        # Clean up uploaded file
-        try:
-            os.remove(save_path)
-        except:
-            pass
-
-        return render_template('index.html', result=result)
-    
+        if upload_mode == 'single' and results:
+            return render_template('index.html', result=results[0])
+        else:
+            return render_template('index.html', results=results)
 
     except Exception as e:
         app.logger.error(f"General Exception: {str(e)}")
-        return jsonify({'error': f'Server error: {str(e)}'}), 500
+        return render_template('index.html', error=f"Server error: {str(e)}")
+    
+@app.route('/analyze_url', methods=['POST'])
+def analyze_url():
+    try:
+        url = request.form.get('imageUrl')
+        if not url:
+            return render_template('index.html', error='No URL provided.')
 
-from sqlalchemy import or_, func
+        response = requests.get(url)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        img_tags = soup.find_all('img')
+
+        img_urls = [img['src'] for img in img_tags if img.get('src')]
+        results = []
+        os.makedirs('url_uploads', exist_ok=True)
+
+        for img_url in img_urls:
+            try:
+                # Handle relative URLs
+                full_img_url = requests.compat.urljoin(url, img_url)
+                img_response = requests.get(full_img_url, stream=True)
+                if img_response.status_code != 200:
+                    continue
+
+                filename = secure_filename(os.path.basename(full_img_url))
+                save_path = os.path.join('url_uploads', filename)
+
+                with open(save_path, 'wb') as f:
+                    for chunk in img_response.iter_content(1024):
+                        f.write(chunk)
+
+                # Run your existing analysis pipeline
+                img = Image.open(save_path)
+                width, height = img.size
+                format_type = img.format
+                blurry = is_blurry(save_path)
+
+                # Azure Vision API
+                description = ""
+                vision_url = f"{VISION_API_ENDPOINT}/vision/v3.2/analyze?visualFeatures=Description"
+                vision_headers = {
+                    "Ocp-Apim-Subscription-Key": VISION_API_KEY,
+                    "Content-Type": "application/octet-stream"
+                }
+
+                with open(save_path, 'rb') as img_data:
+                    vision_response = requests.post(vision_url, headers=vision_headers, data=img_data)
+                if vision_response.status_code == 200:
+                    captions = vision_response.json().get("description", {}).get("captions", [])
+                    if captions:
+                        description = captions[0]["text"]
+
+                # Custom Vision API
+                prediction_tag = "Unknown"
+                prediction_confidence = 0.0
+                prediction_url = f"{CUSTOM_VISION_ENDPOINT}/customvision/v3.0/Prediction/{CUSTOM_VISION_PROJECT_ID}/classify/iterations/{CUSTOM_VISION_PUBLISHED_NAME}/image"
+                cv_headers = {
+                    "Prediction-Key": CUSTOM_VISION_PREDICTION_KEY,
+                    "Content-Type": "application/octet-stream"
+                }
+
+                with open(save_path, 'rb') as image_data:
+                    pred_response = requests.post(prediction_url, headers=cv_headers, data=image_data)
+                if pred_response.status_code == 200:
+                    predictions = pred_response.json().get("predictions", [])
+                    if predictions:
+                        best = max(predictions, key=lambda x: x["probability"])
+                        prediction_tag = best["tagName"]
+                        prediction_confidence = best["probability"]
+
+                result = {
+                    'filename': filename,
+                    'format': format_type,
+                    'width': width,
+                    'height': height,
+                    'blurry': 'Yes' if blurry else 'No',
+                    'caption': description,
+                    'prediction': prediction_tag,
+                    'prediction_confidence': round(prediction_confidence * 100, 2),
+                    'feedback': generate_feedback(prediction_tag, description, 'Yes' if blurry else 'No')
+                }
+
+                new_entry = ImageAnalysis(
+                    filename=filename,
+                    format=result['format'],
+                    width=result['width'],
+                    height=result['height'],
+                    blurry=result['blurry'],
+                    prediction=result['prediction'],
+                    confidence=result['prediction_confidence'],
+                    caption=result['caption'],
+                    feedback=result['feedback']
+                )
+                db.session.add(new_entry)
+                results.append(result)
+
+                os.remove(save_path)
+
+            except Exception as e:
+                app.logger.error(f"Error processing image from URL: {str(e)}")
+                continue
+
+        db.session.commit()
+        return render_template('index.html', results=results)
+
+    except Exception as e:
+        app.logger.error(f"General Exception in analyze_url: {str(e)}")
+        return render_template('index.html', error=f"Server error: {str(e)}")
 
 @app.route('/records')
 def records():
@@ -304,7 +404,7 @@ def records():
             or_(
                 ImageAnalysis.filename.ilike(f'%{search_query}%'),
                 ImageAnalysis.caption.ilike(f'%{search_query}%'),
-                func.lower(ImageAnalysis.prediction) == search_query  # exact match only
+                func.lower(ImageAnalysis.prediction) == search_query
             )
         )
 
@@ -315,6 +415,5 @@ def records():
     return render_template('records.html', records=all_records, search=search_query, blurry_filter=filter_blurry)
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8000))  # Use the port provided by the platform
-    app.run(host='0.0.0.0', port=port, debug=False)  # Bind to all interfaces
-
+    port = int(os.environ.get('PORT', 8000))
+    app.run(host='0.0.0.0', port=port, debug=False)
